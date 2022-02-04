@@ -1,0 +1,9 @@
+[meta]
+name     = "Map Stats"
+author   = "oyv"
+category = "Utilities"
+version  = "0.1.0"
+siteid   = 171
+
+[script]
+imports = [ "Icons.as", "Time.as", "Formatting.as" ]
