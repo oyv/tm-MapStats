@@ -2,7 +2,71 @@
 
 #if TMNEXT
 
-Json::Value current_stats;
+[Setting name="Display limit" description="The maximum amount of maps to display in the menu."]
+int Setting_DisplayLimit = 10;
+
+class MapStats
+{
+	string m_uid;
+	string m_name;
+
+	uint64 m_timePlay = 0;
+	uint64 m_timeEditor = 0;
+	uint64 m_timeSpectator = 0;
+
+	MapStats(const Json::Value &in js)
+	{
+		FromJson(js);
+	}
+
+	MapStats(const string &in uid, const Json::Value &in js)
+	{
+		m_uid = uid;
+		FromJson(js);
+	}
+
+	MapStats(const string &in uid, const string &in name)
+	{
+		m_uid = uid;
+		m_name = name;
+	}
+
+	void FromJson(const Json::Value &in js)
+	{
+		if (js.HasKey("uid")) {
+			m_uid = js["uid"];
+		}
+		m_name = js["name"];
+		m_timePlay = Text::ParseUInt64(js["play_time"]);
+		m_timeEditor = Text::ParseUInt64(js["editor_time"]);
+		m_timeSpectator = Text::ParseUInt64(js["spectator_time"]);
+	}
+
+	Json::Value ToJson()
+	{
+		auto ret = Json::Object();
+		ret["uid"] = m_uid;
+		ret["name"] = m_name;
+		ret["play_time"] = Text::Format("%lld", m_timePlay);
+		ret["editor_time"] = Text::Format("%lld", m_timeEditor);
+		ret["spectator_time"] = Text::Format("%lld", m_timeSpectator);
+		return ret;
+	}
+}
+
+array<MapStats@> g_maps;
+
+int FindMapStats(const string &in uid)
+{
+	// We look for UID in reverse here because recent maps are last!
+	for (int i = int(g_maps.Length) - 1; i >= 0; i--) {
+		auto ms = g_maps[i];
+		if (ms.m_uid == uid) {
+			return int(i);
+		}
+	}
+	return -1;
+}
 
 uint64 prev_time; // The previous timestamp at which the time was saved.
 uint64 prev_game_time = 0;
@@ -14,36 +78,40 @@ uint64 save_interval = 60000; // 60 seconds
 uint64 sleep_interval = 1000; // 1 second
 auto path = IO::FromDataFolder("map_stats.json");
 
-void save_time(string map, string map_name, uint64 add_time, bool editor, bool spectator, bool to_file)
+void save_time(const string &in uid, const string &in map_name, uint64 add_time, bool editor, bool spectator, bool to_file)
 {
-	if (!current_stats["maps"].HasKey(map)) {
-		current_stats["maps"][map] = Json::Object();
-		current_stats["maps"][map]["name"] = map_name;
-		current_stats["maps"][map]["play_time"] = Text::Format("%lld", 0);
-		current_stats["maps"][map]["editor_time"] = Text::Format("%lld", 0);
-		current_stats["maps"][map]["spectator_time"] = Text::Format("%lld", 0);
-	}
+	MapStats@ ms = null;
 
-	string time_name;
-	if (spectator) {
-		time_name = "spectator_time";
-	} else if (editor) {
-		time_name = "editor_time";
+	int index = FindMapStats(uid);
+	if (index == -1) {
+		@ms = MapStats(uid, map_name);
 	} else {
-		time_name = "play_time";
+		@ms = g_maps[index];
+		g_maps.RemoveAt(index);
 	}
+	g_maps.InsertLast(ms);
 
-	auto prev_saved_time = Text::ParseUInt64(current_stats["maps"][map][time_name]);
-	Json::Value current_map = current_stats["maps"][map];
-
-	// To put the current map at the bottom. This sorts the maps by how recently they were used.
-	current_stats["maps"].Remove(map);
-	current_stats["maps"][map] = current_map;
-	current_stats["maps"][map][time_name] = Text::Format("%lld", prev_saved_time + add_time);
+	if (spectator) {
+		ms.m_timeSpectator += add_time;
+	} else if (editor) {
+		ms.m_timeEditor += add_time;
+	} else {
+		ms.m_timePlay += add_time;
+	}
 
 	if (to_file) {
 		auto path = IO::FromDataFolder("map_stats.json");
-		Json::ToFile(path, current_stats);
+
+		auto jsMaps = Json::Array();
+		for (uint i = 0; i < g_maps.Length; i++) {
+			jsMaps.Add(g_maps[i].ToJson());
+		}
+
+		auto js = Json::Object();
+		js["version"] = 2;
+		js["maps"] = jsMaps;
+
+		Json::ToFile(path, js);
 	}
 }
 
@@ -62,10 +130,30 @@ void Main()
 	prev_time = Time::get_Now();
 
 	if (IO::FileExists(path)) {
-		current_stats = Json::FromFile(path);
-	} else {
-		current_stats = Json::Object();
-		current_stats["maps"] = Json::Object();
+		auto js = Json::FromFile(path);
+
+		int version = 1;
+		if (js.HasKey("version")) {
+			version = js["version"];
+		}
+
+		if (version == 1) {
+			// Migrate from old format
+			auto keys = js["maps"].GetKeys();
+			for (uint i = 0; i < keys.Length; i++) {
+				string uid = keys[i];
+				g_maps.InsertLast(MapStats(uid, js["maps"][uid]));
+			}
+
+		} else {
+			// Load new format
+			auto jsMaps = js["maps"];
+			for (uint i = 0; i < jsMaps.Length; i++) {
+				g_maps.InsertLast(MapStats(jsMaps[i]));
+			}
+		}
+
+		trace("Loaded " + g_maps.Length + " maps from disk");
 	}
 
 	while(true) {
@@ -140,21 +228,24 @@ void RenderMenu()
 		UI::Separator();
 
 		// List maps most recently used first.
-		auto keys = current_stats["maps"].GetKeys();
-		for (int i = keys.Length - 1; i >= 0 ; i--) {
-			string map_name;
+		int lowestIndex = int(g_maps.Length) - Setting_DisplayLimit;
+		if (lowestIndex < 0) {
+			lowestIndex = 0;
+		}
 
-			if (current_stats["maps"][keys[i]]["name"] == "") {
-				map_name = "No map";
-			} else {
-				map_name = ColoredString(current_stats["maps"][keys[i]]["name"]);
+		for (int i = int(g_maps.Length) - 1; i >= lowestIndex; i--) {
+			auto ms = g_maps[i];
+
+			string map_name = "No map";
+			if (ms.m_name != "") {
+				map_name = ms.m_name;
 			}
 
-			uint64 play_time = Text::ParseUInt64(current_stats["maps"][keys[i]]["play_time"]);
-			uint64 editor_time = Text::ParseUInt64(current_stats["maps"][keys[i]]["editor_time"]);
-			uint64 spectator_time = Text::ParseUInt64(current_stats["maps"][keys[i]]["spectator_time"]);
+			uint64 play_time = ms.m_timePlay;
+			uint64 editor_time = ms.m_timeEditor;
+			uint64 spectator_time = ms.m_timeSpectator;
 
-			if (keys[i] == current_map) {
+			if (ms.m_uid == current_map) {
 				// Track the current unsaved time as well.
 				uint64 now_time = Time::get_Now();
 
@@ -167,7 +258,7 @@ void RenderMenu()
 				}
 			}
 
-			UI::TextWrapped(map_name);
+			UI::TextWrapped(ColoredString(map_name));
 			UI::NextColumn();
 			UI::Text(format_time(play_time));
 			UI::NextColumn();
