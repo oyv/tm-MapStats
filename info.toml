@@ -6,4 +6,4 @@ version  = "0.1.0"
 siteid   = 171
 
 [script]
-imports = [ "Icons.as", "Time.as", "Formatting.as" ]
+imports = [ "Time.as", "Formatting.as" ]
