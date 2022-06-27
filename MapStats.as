@@ -2,6 +2,9 @@
 
 #if TMNEXT
 
+[Setting name="Display limit" description="The maximum amount of maps to display in the menu."]
+int Setting_DisplayLimit = 10;
+
 class MapStats
 {
 	string m_uid;
@@ -225,7 +228,12 @@ void RenderMenu()
 		UI::Separator();
 
 		// List maps most recently used first.
-		for (int i = int(g_maps.Length) - 1; i >= 0; i--) {
+		int lowestIndex = int(g_maps.Length) - Setting_DisplayLimit;
+		if (lowestIndex < 0) {
+			lowestIndex = 0;
+		}
+
+		for (int i = int(g_maps.Length) - 1; i >= lowestIndex; i--) {
 			auto ms = g_maps[i];
 
 			string map_name = "No map";
